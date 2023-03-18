@@ -9,6 +9,8 @@
 #include <cmath>
 #include <random>
 #include <vector>
+#include <stdio.h>
+#include <string>
 
 #include "dietgpu/ans/GpuANSCodec.h"
 #include "dietgpu/utils/StackDeviceMemory.h"
@@ -279,4 +281,127 @@ TEST(ANSTest, BatchStride) {
 
   // FIXME: 16 byte alignment required
   runBatchStride(res, 10, 13, 8192 + 16);
+}
+
+void runSaveToFile(
+    StackDeviceMemory& res,
+    int prec,
+    const std::vector<uint32_t>& batchSizes,
+    double lambda = 100.0) {
+  // run on a different stream to test stream assignment
+  auto stream = CudaStream::makeNonBlocking();
+
+  int numInBatch = batchSizes.size();
+  uint32_t maxSize = 0;
+  for (auto v : batchSizes) {
+    maxSize = std::max(maxSize, v);
+  }
+
+  auto outBatchStride = getMaxCompressedSize(maxSize);
+
+  auto batch_host = genBatch(batchSizes, lambda);
+
+  auto batch_dev = toDevice(res, batch_host, stream);
+
+  auto inPtrs = std::vector<const void*>(batchSizes.size());
+  {
+    for (int i = 0; i < inPtrs.size(); ++i) {
+      inPtrs[i] = batch_dev[i].data();
+    }
+  }
+
+  auto enc_dev = res.alloc<uint8_t>(stream, numInBatch * outBatchStride);
+
+  auto encPtrs = std::vector<void*>(batchSizes.size());
+  for (int i = 0; i < inPtrs.size(); ++i) {
+    encPtrs[i] = (uint8_t*)enc_dev.data() + i * outBatchStride;
+  }
+
+  auto outCompressedSize_dev = res.alloc<uint32_t>(stream, numInBatch);
+
+  ansEncodeBatchPointer(
+      res,
+      ANSCodecConfig(prec, true),
+      numInBatch,
+      inPtrs.data(),
+      batchSizes.data(),
+      nullptr,
+      encPtrs.data(),
+      outCompressedSize_dev.data(),
+      stream);
+
+  auto encSize = outCompressedSize_dev.copyToHost(stream);
+  for (auto v : encSize) {
+    // Reported compressed sizes in bytes should be a multiple of 16 for aligned
+    // packing
+    EXPECT_EQ(v % 16, 0);
+  }
+
+  auto writeFile = [](std::string const& name, std::vector<uint8_t> data) {
+    FILE* f = fopen(name.c_str(), "wb");
+    fwrite(data.data(), 1, data.size(), f);
+    fclose(f);
+  };
+  auto enc_host = toHost(res, enc_dev, stream);
+  for (size_t i = 0; i < batch_host.size(); ++i) {
+    std::string name = std::string("size-") + std::to_string(b.size())
+        + "-prec-" + std::to_string(prec)
+        + "-lambda-" + std::to_string(int(lambda));
+    writeFile(name, batch_host[i]);
+    ASSERT_LT(encSize[i], enc_host[i].size());
+    enc_host[i].resize(encSize[i]);
+    writeFile(name + ".ans", enc_host[i]);
+  }
+
+  auto enc2_dev = toDevice(res, enc_host, stream);
+
+  auto enc2Ptrs = std::vector<const void*>(encSize.size());
+  {
+    for (int i = 0; i < inPtrs.size(); ++i) {
+      enc2Ptrs[i] = enc2_dev[i].data();
+    }
+  }
+
+  // Decode data
+  auto dec_dev = buffersToDevice(res, batchSizes, stream);
+
+  auto decPtrs = std::vector<void*>(batchSizes.size());
+  for (int i = 0; i < inPtrs.size(); ++i) {
+    decPtrs[i] = dec_dev[i].data();
+  }
+
+  auto outSuccess_dev = res.alloc<uint8_t>(stream, numInBatch);
+  auto outSize_dev = res.alloc<uint32_t>(stream, numInBatch);
+
+  ansDecodeBatchPointer(
+      res,
+      ANSCodecConfig(prec, true),
+      numInBatch,
+      (const void**)enc2Ptrs.data(),
+      decPtrs.data(),
+      batchSizes.data(),
+      outSuccess_dev.data(),
+      outSize_dev.data(),
+      stream);
+
+  auto outSuccess = outSuccess_dev.copyToHost(stream);
+  auto outSize = outSize_dev.copyToHost(stream);
+
+  for (int i = 0; i < outSuccess.size(); ++i) {
+    EXPECT_TRUE(outSuccess[i]);
+    EXPECT_EQ(outSize[i], batchSizes[i]);
+  }
+
+  auto dec_host = toHost(res, dec_dev, stream);
+  EXPECT_EQ(batch_host, dec_host);
+}
+
+TEST(ANSTest, BatchPointer) {
+  auto res = makeStackMemory();
+
+  for (auto prec : {9, 10, 11}) {
+    for (auto lambda : {1.0, 10.0, 100.0, 1000.0}) {
+      runBatchPointer(res, prec, {1000, 10000, 100000, 1000000, 10000000}, lambda);
+    }
+  }
 }
