@@ -342,14 +342,17 @@ void runSaveToFile(
     fwrite(data.data(), 1, data.size(), f);
     fclose(f);
   };
-  auto enc_host = toHost(res, enc_dev, stream);
+  encFlat_host = enc_dev.copyToHost(stream);
+  std::vector<std::vector<uint8_t>> enc_host;
+  for (size_t i = 0; i < encSizes.size(); ++i) {
+    size_t start = encHost_flat.begin() + i * outBatchStride;
+    enc_host.push_back(std::vector<uint8_t>(start, start + encSizes[i]));
+  }
   for (size_t i = 0; i < batch_host.size(); ++i) {
-    std::string name = std::string("size-") + std::to_string(b.size())
+    std::string name = std::string("size-") + std::to_string(batch_host[i].size())
         + "-prec-" + std::to_string(prec)
         + "-lambda-" + std::to_string(int(lambda));
     writeFile(name, batch_host[i]);
-    ASSERT_LT(encSize[i], enc_host[i].size());
-    enc_host[i].resize(encSize[i]);
     writeFile(name + ".ans", enc_host[i]);
   }
 
@@ -396,12 +399,14 @@ void runSaveToFile(
   EXPECT_EQ(batch_host, dec_host);
 }
 
-TEST(ANSTest, BatchPointer) {
+TEST(ANSTest, SaveToFile) {
   auto res = makeStackMemory();
 
   for (auto prec : {9, 10, 11}) {
     for (auto lambda : {1.0, 10.0, 100.0, 1000.0}) {
-      runBatchPointer(res, prec, {1000, 10000, 100000, 1000000, 10000000}, lambda);
+      for (auto n : {1, 2, 4, 8, 16, 32, 64, 128}) {
+        runSaveToFile(res, prec, {n * 512 * 1024}, lambda);
+      }
     }
   }
 }
