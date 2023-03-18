@@ -345,7 +345,7 @@ void runSaveToFile(
   auto encFlat_host = enc_dev.copyToHost(stream);
   std::vector<std::vector<uint8_t>> enc_host;
   for (size_t i = 0; i < encSize.size(); ++i) {
-    size_t start = encHost_flat.begin() + i * outBatchStride;
+    size_t start = encFlat_host.begin() + i * outBatchStride;
     enc_host.push_back(std::vector<uint8_t>(start, start + encSize[i]));
   }
   for (size_t i = 0; i < batch_host.size(); ++i) {
@@ -405,7 +405,7 @@ TEST(ANSTest, SaveToFile) {
   for (auto prec : {9, 10, 11}) {
     for (auto lambda : {1.0, 10.0, 100.0, 1000.0}) {
       for (auto n : {1, 2, 4, 8, 16, 32, 64, 128}) {
-        runSaveToFile(res, prec, {n * 512 * 1024}, lambda);
+        runSaveToFile(res, prec, {(uint32_t)n * 512 * 1024}, lambda);
       }
     }
   }
