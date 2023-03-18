@@ -342,11 +342,11 @@ void runSaveToFile(
     fwrite(data.data(), 1, data.size(), f);
     fclose(f);
   };
-  encFlat_host = enc_dev.copyToHost(stream);
+  auto encFlat_host = enc_dev.copyToHost(stream);
   std::vector<std::vector<uint8_t>> enc_host;
-  for (size_t i = 0; i < encSizes.size(); ++i) {
+  for (size_t i = 0; i < encSize.size(); ++i) {
     size_t start = encHost_flat.begin() + i * outBatchStride;
-    enc_host.push_back(std::vector<uint8_t>(start, start + encSizes[i]));
+    enc_host.push_back(std::vector<uint8_t>(start, start + encSize[i]));
   }
   for (size_t i = 0; i < batch_host.size(); ++i) {
     std::string name = std::string("size-") + std::to_string(batch_host[i].size())
