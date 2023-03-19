@@ -10,44 +10,33 @@
 #include "ANSUtils.h"
 
 namespace dietcpu {
-class DstCapacityTooSmallError : public std::runtime_error {
-public:
-  DstCapacityTooSmallError() : std::runtime_error("Dst capacity too small!") {}
-};
-
-class PartialBlockError : public std::runtime_error {
-public:
-  PartialBlockError()
-      : std::runtime_error("Partial blocks not handled (yet)!") {}
-};
-
-class UnsupportedProbBitsError : public std::runtime_error {
-public:
-  UnsupportedProbBitsError()
-      : std::runtime_error("Prob bits must be >= 9 && <= 11!") {}
-};
-
 namespace {
 constexpr auto constructReadPermute() {
-    std::array<std::array<uint32_t, 8>, 256> permute;
-    for (int i = 0; i < permute.size(); ++i) {
-        uint32_t remainder = 8;
-        for (int j = permute[i].size() - 1; j >= 0; --j) {
-            bool const bitSet = (i & (1 << j)) != 0;
-            if (bitSet) {
-                remainder -= 1;
-                permute[i][j] = remainder;
-            } else {
-                permute[i][j] = 0;
-            }
-        }
+  std::array<std::array<uint32_t, 8>, 256> permute;
+  for (int i = 0; i < permute.size(); ++i) {
+    uint32_t remainder = 8;
+    for (int j = permute[i].size() - 1; j >= 0; --j) {
+      bool const bitSet = (i & (1 << j)) != 0;
+      if (bitSet) {
+        remainder -= 1;
+        permute[i][j] = remainder;
+      } else {
+        permute[i][j] = 0;
+      }
     }
-    return permute;
+  }
+  return permute;
 }
 
-constexpr auto __attribute__((__aligned__(32))) kReadPermute = constructReadPermute();
+constexpr auto __attribute__((__aligned__(32))) kReadPermute =
+    constructReadPermute();
 
-size_t constexpr kBlockSize = 4096;
+VectorAVX2 readPermute(int readM) {
+  return VectorAVX2(VectorAVX2::Aligned{},
+                    (__m256i const *)kReadPermute[readM].data());
+}
+
+size_t constexpr kBlockSize = kDefaultBlockSize;
 
 using TableT = uint32_t;
 
@@ -87,74 +76,11 @@ std::vector<TableT> ansDecodeTable(ANSCoalescedHeader const &header) {
   return table;
 }
 
-class VectorAVX2 {
-public:
-  VectorAVX2() {}
-
-  struct Aligned {};
-  struct Unaligned {};
-
-  explicit VectorAVX2(Unaligned, __m256i_u const *ptr) {
-    v_ = _mm256_loadu_si256(ptr);
-  }
-  explicit VectorAVX2(Aligned, __m256i const *ptr) {
-    v_ = _mm256_load_si256(ptr);
-  }
-
-  /* implicit */ VectorAVX2(__m256i v) : v_(v) {}
-
-  explicit VectorAVX2(uint32_t x) : v_(_mm256_set1_epi32(x)) {}
-
-  static VectorAVX2 loadWordForEachState(ANSEncodedT const *end) {
-    __m128i const v = _mm_loadu_si128((__m128i_u const *)(end - 8));
-    return _mm256_cvtepu16_epi32(v);
-  }
-
-  VectorAVX2 operator&(VectorAVX2 const &o) const {
-    return _mm256_and_si256(v_, o.v_);
-  }
-
-  VectorAVX2 operator<<(int shift) const {
-    return _mm256_slli_epi32(v_, shift);
-  }
-
-  VectorAVX2 operator>>(int shift) const {
-    return _mm256_srli_epi32(v_, shift);
-  }
-
-  VectorAVX2 operator*(VectorAVX2 const &o) const {
-    return _mm256_mullo_epi32(v_, o.v_);
-  }
-
-  VectorAVX2 operator+(VectorAVX2 const &o) const {
-    return _mm256_add_epi32(v_, o.v_);
-  }
-
-  VectorAVX2 operator<(VectorAVX2 const &o) const {
-    return _mm256_cmpgt_epi32(o.v_, v_);
-  }
-
-  int mask() const { return _mm256_movemask_ps((__m256)v_); }
-
-  VectorAVX2 permute8x32(VectorAVX2 const &p) const {
-    return _mm256_permutevar8x32_epi32(v_, p.v_);
-  }
-
-  VectorAVX2 blend(VectorAVX2 const &v0, VectorAVX2 const &v1) const {
-    return _mm256_blendv_epi8(*v0, *v1, v_);
-  }
-
-  __m256i operator*() const { return v_; }
-
-private:
-  __m256i v_;
-};
-
 template <size_t kProbBits> class ANSTableAVX2 : public VectorAVX2 {
 public:
   explicit ANSTableAVX2() {}
   explicit ANSTableAVX2(TableT const *table, VectorAVX2 indices)
-      : VectorAVX2(_mm256_i32gather_epi32((int const*)table, *indices, 4)) {}
+      : VectorAVX2(indices.gather32((int const *)table)) {}
 
   /// 2. Get the symbol from the table.
   VectorAVX2 symbol() const { return *this & VectorAVX2(0xFF); }
@@ -192,7 +118,7 @@ public:
 
     auto const readV = state < VectorAVX2(kANSMinState);
     auto const readM = readV.mask();
-    auto const permV = readPermute(readV, readM);
+    auto const permV = readPermute(readM);
     dataV = dataV.permute8x32(permV);
     auto const nextV = (state << kANSEncodedBits) + dataV;
 
@@ -201,12 +127,6 @@ public:
     return _mm_popcnt_u32(readM);
   }
 };
-
-VectorAVX2 readPermute(VectorAVX2 readV, int readM) {
-  (void)readV;
-  return VectorAVX2(VectorAVX2::Aligned{},
-                    (__m256i const *)kReadPermute[readM].data());
-}
 
 void write(ANSDecodedT *out, VectorAVX2 symbols0V, VectorAVX2 symbols1V) {
   VectorAVX2 symbolsV = _mm256_packus_epi32(*symbols0V, *symbols1V);

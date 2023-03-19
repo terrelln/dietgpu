@@ -1,6 +1,8 @@
 #pragma once
 
 #include <assert.h>
+#include <immintrin.h>
+#include <stdexcept>
 
 #include "../utils/StaticUtils.h"
 
@@ -8,6 +10,23 @@
 // Copied over so I don't have to worry about CUDA
 
 namespace dietcpu {
+
+class DstCapacityTooSmallError : public std::runtime_error {
+public:
+  DstCapacityTooSmallError() : std::runtime_error("Dst capacity too small!") {}
+};
+
+class PartialBlockError : public std::runtime_error {
+public:
+  PartialBlockError()
+      : std::runtime_error("Partial blocks not handled (yet)!") {}
+};
+
+class UnsupportedProbBitsError : public std::runtime_error {
+public:
+  UnsupportedProbBitsError()
+      : std::runtime_error("Prob bits must be >= 9 && <= 11!") {}
+};
 
 constexpr size_t kWarpSize = 32;
 
@@ -206,4 +225,126 @@ struct alignas(32) ANSCoalescedHeader {
 
   // Then follows the compressed per-warp/block data for each segment
 };
-}
+
+class VectorAVX2 {
+public:
+  VectorAVX2() {}
+
+  struct Aligned {};
+  struct Unaligned {};
+
+  explicit VectorAVX2(Unaligned, __m256i_u const *ptr) {
+    v_ = _mm256_loadu_si256(ptr);
+  }
+  explicit VectorAVX2(Aligned, __m256i const *ptr) {
+    v_ = _mm256_load_si256(ptr);
+  }
+
+  /* implicit */ VectorAVX2(__m256i v) : v_(v) {}
+
+  explicit VectorAVX2(uint32_t x) : v_(_mm256_set1_epi32(x)) {}
+
+  static VectorAVX2 loadWordForEachState(ANSEncodedT const *end) {
+    __m128i const v = _mm_loadu_si128((__m128i_u const *)(end - 8));
+    return _mm256_cvtepu16_epi32(v);
+  }
+
+  static VectorAVX2 loadWordForEachState(ANSDecodedT const *in) {
+    __m128i const v = _mm_loadu_si128((__m128i_u const *)in);
+    return _mm256_cvtepu8_epi32(v);
+  }
+
+  VectorAVX2 operator&(VectorAVX2 const &o) const {
+    return _mm256_and_si256(v_, o.v_);
+  }
+
+  VectorAVX2 operator|(VectorAVX2 const &o) const {
+    return _mm256_or_si256(v_, o.v_);
+  }
+
+  VectorAVX2 operator<<(int shift) const {
+    return _mm256_slli_epi32(v_, shift);
+  }
+
+  VectorAVX2 operator>>(int shift) const {
+    return _mm256_srli_epi32(v_, shift);
+  }
+
+  VectorAVX2 operator>>(VectorAVX2 const &o) const {
+    return _mm256_srlv_epi32(v_, o.v_);
+  }
+
+  VectorAVX2 operator*(VectorAVX2 const &o) const {
+    return _mm256_mullo_epi32(v_, o.v_);
+  }
+
+  VectorAVX2 operator+(VectorAVX2 const &o) const {
+    return _mm256_add_epi32(v_, o.v_);
+  }
+
+  VectorAVX2 operator-(VectorAVX2 const &o) const {
+    return _mm256_sub_epi32(v_, o.v_);
+  }
+
+  VectorAVX2 operator<(VectorAVX2 const &o) const {
+    return _mm256_cmpgt_epi32(o.v_, v_);
+  }
+
+  VectorAVX2 operator>(VectorAVX2 const &o) const {
+    return _mm256_cmpgt_epi32(v_, o.v_);
+  }
+
+  int mask() const { return _mm256_movemask_ps((__m256)v_); }
+
+  void storeu(void *p) { _mm256_storeu_si256((__m256i_u *)p, v_); }
+
+  VectorAVX2 gather32(int32_t const *table, bool emulateGather = false) const {
+    if (emulateGather) {
+      int indices[8] __attribute__((aligned(32)));
+      _mm256_store_si256((__m256i *)indices, v_);
+      return _mm256_setr_epi32(table[indices[0]], table[indices[1]],
+                               table[indices[2]], table[indices[3]],
+                               table[indices[4]], table[indices[5]],
+                               table[indices[6]], table[indices[7]]);
+    } else {
+      return _mm256_i32gather_epi32(table, v_, 4);
+    }
+  }
+
+  VectorAVX2 gather64(int32_t const *table, bool emulateGather = false) const {
+    if (emulateGather) {
+      int indices[8] __attribute__((aligned(32)));
+      _mm256_store_si256((__m256i *)indices, v_);
+      return _mm256_setr_epi32(table[indices[0] * 2], table[indices[1] * 2],
+                               table[indices[2] * 2], table[indices[3] * 2],
+                               table[indices[4] * 2], table[indices[5] * 2],
+                               table[indices[6] * 2], table[indices[7] * 2]);
+    } else {
+      return _mm256_i32gather_epi32(table, v_, 8);
+    }
+  }
+
+  VectorAVX2 permute8x32(VectorAVX2 const &p) const {
+    return _mm256_permutevar8x32_epi32(v_, p.v_);
+  }
+
+  VectorAVX2 blend(VectorAVX2 const &v0, VectorAVX2 const &v1) const {
+    return _mm256_blendv_epi8(*v0, *v1, v_);
+  }
+
+  VectorAVX2 mulhi(VectorAVX2 const &o) const {
+    // Multiply bottom 4 items and top 4 items together.
+    VectorAVX2 highMul = (*this >> 32) * (o >> 32);
+    VectorAVX2 lowMul = (*this * o) >> 32;
+
+    highMul = highMul & _mm256_set1_epi64x(0xFFFFFFFF00000000ULL);
+
+    return lowMul | highMul;
+  }
+
+  __m256i operator*() const { return v_; }
+
+private:
+  __m256i v_;
+};
+} // namespace dietcpu
