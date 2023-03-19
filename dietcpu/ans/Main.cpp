@@ -41,9 +41,10 @@ int main(int argc, char **argv) {
   size_t codedSize;
   if (modeArg[0] == 'e') {
     int const probBits = std::stoi(modeArg + 1);
+    auto table = dietcpu::ansBuildTable(data.data(), data.size(), probBits);
     for (size_t i = 0; i < runs; ++i) {
       codedSize = dietcpu::ansEncode(coded.data(), coded.size(), data.data(),
-                                     data.size(), probBits);
+                                     data.size(), probBits, table.data());
     }
   } else if (modeArg == std::string("d")) {
     for (size_t i = 0; i < runs; ++i) {

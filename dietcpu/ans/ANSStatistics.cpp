@@ -77,10 +77,10 @@ std::vector<ANSTable> ansCalcWeights(int probBits, uint32_t const *histogram,
     uint64_t const pdf = table[s];
 
     if (pdf == 0) {
-        table[s] = 0;
-        continue;
+      table[s] = 0;
+      continue;
     }
-    
+
     uint64_t shift = pdf - 1;
     shift = 32 - (shift == 0 ? 32 : __builtin_clz(shift));
 
@@ -90,14 +90,19 @@ std::vector<ANSTable> ansCalcWeights(int probBits, uint32_t const *histogram,
     assert(pdf < (1 << 12));
     assert(cdf < (1 << 12));
     assert(shift < (1 << 5));
-    // fprintf(stderr, "table[%zu] = pdf=%lu cdf=%lu shift=%lu divM1=%u (count = %u)\n", s, pdf, cdf, shift, (uint32_t)divM1, histogram[s]);
-    
+
     table[s] = (pdf << 0) | (cdf << 12) | (shift << 24) | (divM1 << 32);
 
     cdf += pdf;
   }
 
   return table;
+}
+
+std::vector<ANSTable> ansBuildTable(void const *src, size_t srcSize,
+                                    int probBits) {
+  auto histogram = ansHistogram((ANSDecodedT const *)src, srcSize);
+  return ansCalcWeights(probBits, histogram.data(), srcSize);
 }
 
 } // namespace dietcpu

@@ -13,6 +13,8 @@ namespace dietcpu {
 // [32, 64) = div_m1
 using ANSTable = uint64_t;
 
+std::vector<ANSTable> ansBuildTable(void const* src, size_t srcSize, int probBits);
+
 std::vector<uint32_t> ansHistogram(ANSDecodedT const *src, size_t srcSize);
 
 std::vector<ANSTable> ansCalcWeights(int probBits, uint32_t const *histogram, size_t srcSize);

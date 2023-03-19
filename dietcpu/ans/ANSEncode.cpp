@@ -146,6 +146,13 @@ size_t ansEncodeBlockFull(ANSWarpState &states, ANSEncodedT *blockDataOut,
 
 size_t ansEncode(void *dst, size_t dstCapacity, void const *src, size_t srcSize,
                  int probBits) {
+
+  auto table = ansBuildTable(src, srcSize, probBits);
+  return ansEncode(dst, dstCapacity, src, srcSize, probBits, table.data());
+}
+
+size_t ansEncode(void *dst, size_t dstCapacity, void const *src, size_t srcSize,
+                 int probBits, ANSTable const *table) {
   uint32_t const uncompressedWords = srcSize;
 
   if (srcSize % kDefaultBlockSize != 0) {
@@ -159,8 +166,6 @@ size_t ansEncode(void *dst, size_t dstCapacity, void const *src, size_t srcSize,
     throw DstCapacityTooSmallError();
   }
 
-  auto histogram = ansHistogram((ANSDecodedT const *)src, srcSize);
-  auto table = ansCalcWeights(probBits, histogram.data(), srcSize);
   auto &header = *(ANSCoalescedHeader *)dst;
 
   auto const blockDataStart = header.getBlockDataStart(numBlocks);
@@ -174,15 +179,15 @@ size_t ansEncode(void *dst, size_t dstCapacity, void const *src, size_t srcSize,
     switch (probBits) {
     case 9:
       compressedBlockWords = ansEncodeBlockFull<9>(
-          warpStatesStart[block], blockDataOut, blockDataIn, table.data());
+          warpStatesStart[block], blockDataOut, blockDataIn, table);
       break;
     case 10:
       compressedBlockWords = ansEncodeBlockFull<10>(
-          warpStatesStart[block], blockDataOut, blockDataIn, table.data());
+          warpStatesStart[block], blockDataOut, blockDataIn, table);
       break;
     case 11:
       compressedBlockWords = ansEncodeBlockFull<11>(
-          warpStatesStart[block], blockDataOut, blockDataIn, table.data());
+          warpStatesStart[block], blockDataOut, blockDataIn, table);
       break;
     default:
       throw UnsupportedProbBitsError();
