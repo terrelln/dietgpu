@@ -10,14 +10,15 @@ namespace {
 constexpr auto constructWritePermute() {
   std::array<std::array<uint32_t, 8>, 256> permute;
   for (int i = 0; i < permute.size(); ++i) {
+    for (int j = 0; j < permute[i].size(); ++j) {
+      permute[i][j] = 0;
+    }
     uint32_t written = 0;
     for (int j = 0; j < permute[i].size(); ++j) {
       bool const bitSet = (i & (1 << j)) != 0;
       if (bitSet) {
-        permute[i][j] = written;
+        permute[i][written] = j;
         written += 1;
-      } else {
-        permute[i][j] = 0;
       }
     }
   }
@@ -62,14 +63,13 @@ public:
   ANSStateAVX2() : VectorAVX2(kANSStartState) {}
 
   std::pair<int, VectorAVX2> prepareWrite(VectorAVX2 pdf) {
-    VectorAVX2 const kStateCheckMulV((1 << (kANSStateBits - kProbBits)) - 1);
-    auto const writeV = *this > (pdf * kStateCheckMulV);
+    VectorAVX2 const kStateCheckMulV((1 << (kANSStateBits - kProbBits)));
+    auto const writeV = *this > ((pdf * kStateCheckMulV) - VectorAVX2(1));
 
     auto const writeM = writeV.mask();
     auto const permV = writePermute(writeM);
 
-    auto const maskV = *this & writeV;
-    auto const dataV = maskV.permute8x32(permV);
+    auto const dataV = this->permute8x32(permV);
 
     auto const nextV = *this >> kANSEncodedBits;
     *this = ANSStateAVX2(writeV.blend(*this, nextV));
@@ -129,7 +129,8 @@ size_t ansEncodeBlockFull(ANSWarpState &states, ANSEncodedT *blockDataOut,
         stateV.update(tableV);
 
         if (i < kDefaultBlockSize - kWarpSize) {
-          tablesV[s] = ANSTableAVX2(table, blockDataIn + i * kWarpSize + s * 8);
+          tableV =
+              ANSTableAVX2(table, blockDataIn + i + kWarpSize + (s + t) * 8);
         }
       }
     }
@@ -211,6 +212,6 @@ size_t ansEncode(void *dst, size_t dstCapacity, void const *src, size_t srcSize,
     }
   }
 
-  return totalCompressedWords;
+  return sizeof(ANSEncodedT) * (blockDataOut - (ANSEncodedT *)dst);
 }
 } // namespace dietcpu

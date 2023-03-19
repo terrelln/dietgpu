@@ -65,19 +65,23 @@ std::vector<ANSTable> ansCalcWeights(int probBits, uint32_t const *histogram,
 
   qProbSum = 0;
   for (auto const &[pdf, sym] : qProb) {
+    assert(pdf > 0 || histogram[sym] == 0);
+    assert(pdf == 0 || histogram[sym] > 0);
     table[sym] = pdf;
     qProbSum += pdf;
   }
   assert(qProbSum == kProbWeight);
 
-  uint32_t cdf = 0;
+  uint64_t cdf = 0;
   for (size_t s = 0; s < table.size(); ++s) {
-    uint32_t const pdf = table[s];
+    uint64_t const pdf = table[s];
 
-    if (pdf == 0)
+    if (pdf == 0) {
+        table[s] = 0;
         continue;
+    }
     
-    uint32_t shift = pdf - 1;
+    uint64_t shift = pdf - 1;
     shift = 32 - (shift == 0 ? 32 : __builtin_clz(shift));
 
     constexpr uint64_t one = 1;
@@ -86,6 +90,7 @@ std::vector<ANSTable> ansCalcWeights(int probBits, uint32_t const *histogram,
     assert(pdf < (1 << 12));
     assert(cdf < (1 << 12));
     assert(shift < (1 << 5));
+    // fprintf(stderr, "table[%zu] = pdf=%lu cdf=%lu shift=%lu divM1=%u (count = %u)\n", s, pdf, cdf, shift, (uint32_t)divM1, histogram[s]);
     
     table[s] = (pdf << 0) | (cdf << 12) | (shift << 24) | (divM1 << 32);
 

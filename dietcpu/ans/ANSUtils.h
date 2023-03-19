@@ -296,7 +296,7 @@ public:
 
   int mask() const { return _mm256_movemask_ps((__m256)v_); }
 
-  void storeu(void *p) { _mm256_storeu_si256((__m256i_u *)p, v_); }
+  void storeu(void *p) const { _mm256_storeu_si256((__m256i_u *)p, v_); }
 
   VectorAVX2 gather32(int32_t const *table, bool emulateGather = false) const {
     if (emulateGather) {
@@ -334,15 +334,31 @@ public:
 
   VectorAVX2 mulhi(VectorAVX2 const &o) const {
     // Multiply bottom 4 items and top 4 items together.
-    VectorAVX2 highMul = (*this >> 32) * (o >> 32);
-    VectorAVX2 lowMul = (*this * o) >> 32;
+    VectorAVX2 highMul = _mm256_mul_epu32(_mm256_srli_epi64(**this, 32), _mm256_srli_epi64(*o, 32));
+    VectorAVX2 lowMul = _mm256_mul_epu32(**this, *o);
 
     highMul = highMul & _mm256_set1_epi64x(0xFFFFFFFF00000000ULL);
+    lowMul = _mm256_srli_epi64(*lowMul, 32);
 
     return lowMul | highMul;
   }
 
   __m256i operator*() const { return v_; }
+
+  void debugPrint(char const *name) const {
+#ifndef NDEBUG
+    fprintf(stderr, "%10s = [ ", name);
+    uint32_t data[8];
+    storeu(data);
+    for (size_t i = 0; i < 8; ++i) {
+      auto const sep = i < 7 ? "," : "";
+      fprintf(stderr, "0x%0.8x%s ", data[i], sep);
+    }
+    fprintf(stderr, "]\n");
+#else
+    (void)name;
+#endif
+  }
 
 private:
   __m256i v_;

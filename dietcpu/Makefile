@@ -1,5 +1,4 @@
 CXXFLAGS ?= -O3 -g -DNDEBUG
-CXX ?= clang
 
 # Just rebuild every time because its fast & easy
 .PHONY: main
