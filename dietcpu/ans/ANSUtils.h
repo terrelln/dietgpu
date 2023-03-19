@@ -4,6 +4,9 @@
 
 #include "../utils/StaticUtils.h"
 
+// Basically a clone of the dietgpu file
+// Copied over so I don't have to worry about CUDA
+
 namespace dietcpu {
 
 constexpr size_t kWarpSize = 32;

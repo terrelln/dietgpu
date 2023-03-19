@@ -10,6 +10,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// Basically a clone of the dietgpu file
+// Copied over so I don't have to worry about CUDA
+
 namespace dietcpu {
 
 template <typename U, typename V>
