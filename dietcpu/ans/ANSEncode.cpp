@@ -37,6 +37,8 @@ VectorAVX2 writePermute(int writeM) {
 class ANSTableAVX2 : public VectorAVX2 {
 public:
   ANSTableAVX2() {}
+  ANSTableAVX2(VectorAVX2 pdfCdfShift, VectorAVX2 divM1)
+      : pdfCdfShift_(pdfCdfShift), divM1_(divM1) {}
   ANSTableAVX2(ANSTable const *table, ANSDecodedT const *symbols) {
     auto symbolsV = VectorAVX2::loadWordForEachState(symbols);
     pdfCdfShift_ = symbolsV.gather64((int32_t const *)table, false);
@@ -106,14 +108,82 @@ ANSEncodedT *write(ANSEncodedT *out, ANSStateAVX2<kProbBits> *statesV,
   return out;
 }
 
-// TODO: We can avoid all gathers when we have a small number of symbols
-// If numSymbols < 16:
-//     4 permutes + 2 blends + 1 cmp = lookup
-// Could also do 8 non-cross-land permutes, but that really isn't better
+class alignas(32) ANSTable16 {
+public:
+  ANSTable16(ANSTable const *table) {
+    std::array<uint32_t, 16> pdfCdfShift __attribute__((aligned(32)));
+    std::array<uint32_t, 16> divM1 __attribute__((aligned(32)));
+    for (size_t i = 0; i < 16; ++i) {
+      pdfCdfShift[i] = uint32_t(table[i]);
+      divM1[i] = uint32_t(table[i] >> 32);
+    }
+    for (size_t i = 0; i < 2; ++i) {
+      pdfCdfShift_[i] =
+          VectorAVX2(VectorAVX2::Aligned{}, pdfCdfShift.data() + 8 * i);
+      divM1_[i] = VectorAVX2(VectorAVX2::Aligned{}, divM1.data() + 8 * i);
+    }
+  }
+
+  ANSTableAVX2 lookup(ANSDecodedT const *symbols) const {
+    auto symbolsV = VectorAVX2::loadWordForEachState(symbols);
+    return ANSTableAVX2(lookup(pdfCdfShift_.data(), symbolsV),
+                        lookup(divM1_.data(), symbolsV));
+  }
+
+private:
+  VectorAVX2 lookup(VectorAVX2 const *tablesV,
+                    VectorAVX2 const &symbolsV) const {
+    VectorAVX2 const blendV = symbolsV > VectorAVX2(7);
+    VectorAVX2 const tableV = blendV.blend(tablesV[0], tablesV[1]);
+    return tableV.permute8x32(symbolsV);
+  }
+
+  std::array<VectorAVX2, 2> pdfCdfShift_;
+  std::array<VectorAVX2, 2> divM1_;
+};
+
+// NOTE: clang does better on this loop
+template <int kProbBits>
+size_t ansEncodeBlockFull16(ANSWarpState &states, ANSEncodedT *blockDataOut,
+                            ANSDecodedT const *blockDataIn,
+                            ANSTable const *table) {
+  ANSTable16 table16(table);
+  std::array<ANSStateAVX2<kProbBits>, 4> statesV;
+
+  ANSEncodedT *out = blockDataOut;
+
+  for (size_t i = 0; i < kDefaultBlockSize; i += kWarpSize) {
+    for (size_t s = 0; s < 4; s += 2) {
+      std::array<ANSTableAVX2, 2> tablesV;
+      for (size_t t = 0; t < 2; ++t) {
+        tablesV[t] = table16.lookup(blockDataIn + i + (s + t) * 8);
+      }
+      out = write(out, statesV.data() + s, tablesV.data());
+      for (size_t t = 0; t < 2; ++t) {
+        auto &stateV = statesV[s + t];
+        auto &tableV = tablesV[t];
+
+        stateV.update(tableV);
+      }
+    }
+  }
+
+  for (size_t s = 0; s < statesV.size(); ++s) {
+    statesV[s].storeu(states.warpState + 8 * s);
+  }
+
+  return (size_t)(out - blockDataOut);
+}
+
 template <int kProbBits>
 size_t ansEncodeBlockFull(ANSWarpState &states, ANSEncodedT *blockDataOut,
-                          ANSDecodedT const *blockDataIn,
-                          ANSTable const *table) {
+                          ANSDecodedT const *blockDataIn, ANSTable const *table,
+                          size_t maxSymbolValue) {
+  if (maxSymbolValue < 16) {
+    return ansEncodeBlockFull16<kProbBits>(states, blockDataOut, blockDataIn,
+                                           table);
+  }
+
   std::array<ANSStateAVX2<kProbBits>, 4> statesV;
   std::array<ANSTableAVX2, 4> tablesV;
 
@@ -146,6 +216,14 @@ size_t ansEncodeBlockFull(ANSWarpState &states, ANSEncodedT *blockDataOut,
 
   return (size_t)(out - blockDataOut);
 }
+
+size_t ansMaxSymbolValue(ANSTable const *table) {
+  size_t msv = kNumSymbols - 1;
+  while (msv > 0 && table[msv] == 0) {
+    --msv;
+  }
+  return msv;
+}
 } // namespace
 
 size_t ansEncode(void *dst, size_t dstCapacity, void const *src, size_t srcSize,
@@ -170,6 +248,8 @@ size_t ansEncode(void *dst, size_t dstCapacity, void const *src, size_t srcSize,
     throw DstCapacityTooSmallError();
   }
 
+  auto const maxSymbolValue = ansMaxSymbolValue(table);
+
   auto &header = *(ANSCoalescedHeader *)dst;
 
   auto const blockDataStart = header.getBlockDataStart(numBlocks);
@@ -182,16 +262,19 @@ size_t ansEncode(void *dst, size_t dstCapacity, void const *src, size_t srcSize,
     size_t compressedBlockWords;
     switch (probBits) {
     case 9:
-      compressedBlockWords = ansEncodeBlockFull<9>(
-          warpStatesStart[block], blockDataOut, blockDataIn, table);
+      compressedBlockWords =
+          ansEncodeBlockFull<9>(warpStatesStart[block], blockDataOut,
+                                blockDataIn, table, maxSymbolValue);
       break;
     case 10:
-      compressedBlockWords = ansEncodeBlockFull<10>(
-          warpStatesStart[block], blockDataOut, blockDataIn, table);
+      compressedBlockWords =
+          ansEncodeBlockFull<10>(warpStatesStart[block], blockDataOut,
+                                 blockDataIn, table, maxSymbolValue);
       break;
     case 11:
-      compressedBlockWords = ansEncodeBlockFull<11>(
-          warpStatesStart[block], blockDataOut, blockDataIn, table);
+      compressedBlockWords =
+          ansEncodeBlockFull<11>(warpStatesStart[block], blockDataOut,
+                                 blockDataIn, table, maxSymbolValue);
       break;
     default:
       throw UnsupportedProbBitsError();

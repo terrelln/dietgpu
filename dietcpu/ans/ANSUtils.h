@@ -233,11 +233,11 @@ public:
   struct Aligned {};
   struct Unaligned {};
 
-  explicit VectorAVX2(Unaligned, __m256i_u const *ptr) {
-    v_ = _mm256_loadu_si256(ptr);
+  explicit VectorAVX2(Unaligned, void const *ptr) {
+    v_ = _mm256_loadu_si256((__m256i_u const *)ptr);
   }
-  explicit VectorAVX2(Aligned, __m256i const *ptr) {
-    v_ = _mm256_load_si256(ptr);
+  explicit VectorAVX2(Aligned, void const *ptr) {
+    v_ = _mm256_load_si256((__m256i const *)ptr);
   }
 
   /* implicit */ VectorAVX2(__m256i v) : v_(v) {}
@@ -334,7 +334,8 @@ public:
 
   VectorAVX2 mulhi(VectorAVX2 const &o) const {
     // Multiply bottom 4 items and top 4 items together.
-    VectorAVX2 highMul = _mm256_mul_epu32(_mm256_srli_epi64(**this, 32), _mm256_srli_epi64(*o, 32));
+    VectorAVX2 highMul = _mm256_mul_epu32(_mm256_srli_epi64(**this, 32),
+                                          _mm256_srli_epi64(*o, 32));
     VectorAVX2 lowMul = _mm256_mul_epu32(**this, *o);
 
     highMul = highMul & _mm256_set1_epi64x(0xFFFFFFFF00000000ULL);
