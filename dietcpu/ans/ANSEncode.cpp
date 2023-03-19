@@ -106,6 +106,10 @@ ANSEncodedT *write(ANSEncodedT *out, ANSStateAVX2<kProbBits> *statesV,
   return out;
 }
 
+// TODO: We can avoid all gathers when we have a small number of symbols
+// If numSymbols < 16:
+//     4 permutes + 2 blends + 1 cmp = lookup
+// Could also do 8 non-cross-land permutes, but that really isn't better
 template <int kProbBits>
 size_t ansEncodeBlockFull(ANSWarpState &states, ANSEncodedT *blockDataOut,
                           ANSDecodedT const *blockDataIn,
